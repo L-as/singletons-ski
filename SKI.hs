@@ -1,19 +1,21 @@
+-- singletons-ski
+
+{-# LANGUAGE GHC2021 #-}
+{-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE QuantifiedConstraints #-}
+{-# LANGUAGE ImpredicativeTypes #-}
 {-# LANGUAGE UndecidableInstances #-}
-{-# LANGUAGE FlexibleInstances #-}
 {-# OPTIONS_GHC -Wno-unticked-promoted-constructors -Wno-redundant-constraints #-}
 
 import Data.Kind (Type, Constraint)
 import Unsafe.Coerce (unsafeCoerce)
-import Data.Proxy (Proxy (Proxy))
+import Data.Proxy (Proxy)
 import Data.Coerce (Coercible)
-import GHC.Generics (Generic, Rep, Rec0, D1, C1, S1, pattern MetaData)
 import Data.Type.Equality ((:~:)(Refl))
 
 -- Helpers
-
-type CoerceTo :: forall a. forall (b :: Type) -> a -> b
-type family CoerceTo (b :: Type) (x :: a) :: b where
-  CoerceTo _ x = x
 
 type CoerceTo' :: forall a b. a :~: b -> a -> b
 type family CoerceTo' (eq :: a :~: b) (x :: a) :: b where
@@ -266,14 +268,14 @@ instance Show (a ~> b) where
   showsPrec _ (MkNewtype' _) = ("MkNewtype" <>)
   showsPrec _ (ElimNewtype' _) = ("ElimNewtype" <>)
 
-type MkNewtype :: GetNewtypeInner b ~> b
-type MkNewtype = 'MkNewtype' 'Refl
+type family MkNewtype :: GetNewtypeInner b ~> b
+type instance MkNewtype = 'MkNewtype' 'Refl
 
 pattern MkNewtype :: GetNewtypeInner b ~> b
 pattern MkNewtype = MkNewtype' Refl
 
-type ElimNewtype :: a ~> GetNewtypeInner a
-type ElimNewtype = 'ElimNewtype' 'Refl
+type family ElimNewtype :: a ~> GetNewtypeInner a
+type instance ElimNewtype = 'ElimNewtype' 'Refl
 
 pattern ElimNewtype :: a ~> GetNewtypeInner a
 pattern ElimNewtype = ElimNewtype' Refl
@@ -361,18 +363,6 @@ sinterp = unsafeCoerce interp
 
 -- examples
 
-topair :: a -> (a, a)
-topair x = (x, x)
-
-flipS :: (a ~> b ~> c) ~> b ~> a ~> c
-flipS = S :@ (S :@ (K :@ S) :@ (S :@ (K :@ K) :@ S)) :@ (K :@ K)
-
-twiceS :: a ~> (a ~> a ~> b) ~> b
-twiceS = S :@ (S :@ (K :@ S) :@ (S :@ (K :@ (S :@ I)) :@ K)) :@ K
-
-topairS :: a ~> (a, a)
-topairS = flipS :@ twiceS :@ MkPair
-
 type FlipS :: (a ~> b ~> c) ~> b ~> a ~> c
 type FlipS = S :@ (S :@ (K :@ S) :@ (S :@ (K :@ K) :@ S)) :@ (K :@ K)
 
@@ -386,7 +376,6 @@ type TopairS :: a ~> (a, a)
 type TopairS = FlipS :@ TwiceS :@ MkPair
 
 newtype Id' a = Id' (a ~> a)
-  deriving stock Generic
 
 type instance DefineNewtypeInner (Id' a) = a ~> a
 type instance DefineNewtypeConstructor (Id' a) = 'Id'
@@ -394,11 +383,15 @@ type instance DefineNewtypeConstructor (Id' a) = 'Id'
 type IdS'' :: () ~> a ~> a
 type IdS'' = K :@ I
 
-type IdS' :: forall a. () ~> Id' a
-type IdS' = S :@ (K :@ MkNewtype) :@ (K :@ I)
+type family IdS' :: forall a. () ~> Id' a
+-- FIXME: GHC needs type-level big lambdas
+--type instance IdS' = S :@ (K :@ MkNewtype) :@ (K :@ I)
 
---type IdS :: () ~> ForallS Id'
---type IdS = 'MkForall @() @Id' (IdS' :: forall a. () ~> Id' a)
+type IdS :: () ~> ForallS Id'
+type IdS = MkForall IdS'
+
+idS :: () ~> ForallS Id'
+idS = MkForall $ S :@ (K :@ MkNewtype) :@ (K :@ I)
 
 type RemoveConstantS :: (c ~> a ~> b) ~> (a ~> c) ~> a ~> b
 type RemoveConstantS = ComposeS :@ S :@ FlipS
@@ -406,5 +399,5 @@ type RemoveConstantS = ComposeS :@ S :@ FlipS
 type RemoveUnitS :: (() ~> a ~> b) ~> a ~> b
 type RemoveUnitS = FlipS :@ RemoveConstantS :@ MkUnit
 
---type IdS_recovered :: forall a. a ~> a
---type IdS_recovered = RemoveUnitS :@ (ComposeS :@ ElimNewtype :@ (S :@ (K :@ ElimForall) :@ IdS))
+type IdS_recovered :: forall a. a ~> a
+type IdS_recovered = RemoveUnitS :@ (ComposeS :@ ElimNewtype :@ (S :@ (K :@ ElimForall) :@ IdS))
