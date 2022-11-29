@@ -7,7 +7,7 @@
 {-# LANGUAGE QuantifiedConstraints #-}
 {-# LANGUAGE ImpredicativeTypes #-}
 {-# LANGUAGE UndecidableInstances #-}
-{-# OPTIONS_GHC -Wno-unticked-promoted-constructors -Wno-redundant-constraints #-}
+{-# OPTIONS_GHC -Wall -Wno-unticked-promoted-constructors -Wno-redundant-constraints #-}
 
 import Data.Kind (Type, Constraint)
 import Unsafe.Coerce (unsafeCoerce)
