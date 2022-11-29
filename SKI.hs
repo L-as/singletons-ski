@@ -1,4 +1,5 @@
 -- singletons-ski
+-- by Las Safin
 
 {-# LANGUAGE GHC2021 #-}
 {-# LANGUAGE PatternSynonyms #-}
