@@ -12,7 +12,7 @@
 
 import Data.Kind (Type, Constraint)
 import Unsafe.Coerce (unsafeCoerce)
-import Data.Proxy (Proxy)
+import Data.Proxy (Proxy (Proxy))
 import Data.Coerce (Coercible)
 import Data.Type.Equality ((:~:)(Refl))
 
@@ -174,6 +174,9 @@ coerceNewtypeDown = unsafeCoerce
 coerceNewtypeUp :: GetNewtypeInner a -> a
 coerceNewtypeUp = unsafeCoerce
 
+sunwrap :: Single @a x -> (forall (y :: GetNewtypeInner a). x :~: GetNewtypeConstructor a y -> Single y -> b) -> b
+sunwrap = error "unexecutable"
+
 -- SKI
 
 infixr 0 ~>
@@ -193,12 +196,15 @@ data (~>) (a :: Type) (b :: Type) where
   ElimForall :: ForallS f ~> f x
   MkSome :: forall f x. f x ~> Some f
   ElimSome :: forall a b c (f :: c -> Type). (a ~> Some f) -> (forall x. f x ~> b) -> a ~> b
-  -- FIXME: Add inductive types rather than this, as fixpoint always cause non-termination
-  -- when interpreted with 'Interp'
+  -- FIXME: Add inductive types too and have separate type for fixpoint using
+  -- and non-fixpoint using SKI terms, i.e. type (~>) @(r :: Bool) a b = SKI r a b
   MkFix :: f (Fix f) ~> Fix f
   ElimFix :: Fix f ~> f (Fix f)
+  FixSKI :: ((a ~> b) ~> a ~> b) ~> a ~> b
   MkNewtype' :: a :~: GetNewtypeInner b -> a ~> b
   ElimNewtype' :: GetNewtypeInner a :~: b -> a ~> b
+  MkEq :: a ~> b :~: b
+  ElimEq :: a :~: b ~> p a ~> p b
 data instance Single @(a ~> b) ski where
   SS :: Single 'S
   SK :: Single 'K
@@ -221,8 +227,11 @@ data instance Single @(a ~> b) ski where
     Single x -> Single @(forall z. f z ~> b) y -> Single ('ElimSome x y)
   SMkFix :: Single 'MkFix
   SElimFix :: Single 'ElimFix
+  SFixSKI :: Single 'FixSKI
   SMkNewtype' :: Single eq -> Single ('MkNewtype' eq)
   SElimNewtype' :: Single eq -> Single ('ElimNewtype' eq)
+  SMkEq :: Single 'MkEq
+  SElimEq :: Single 'ElimEq
 instance Known K where known = SK
 instance Known S where known = SS
 instance Known I where known = SI
@@ -246,6 +255,7 @@ instance
   where known = SElimSome known (unsafeCoerce (known :: Single (y @Skolem)))
 instance Known MkFix where known = SMkFix
 instance Known ElimFix where known = SElimFix
+instance Known FixSKI where known = SFixSKI
 instance Known eq => Known (MkNewtype' eq) where known = SMkNewtype' known
 instance Known eq => Known (ElimNewtype' eq) where known = SElimNewtype' known
 instance Show (a ~> b) where
@@ -274,8 +284,11 @@ instance Show (a ~> b) where
   showsPrec _ (ElimSome x y) = ("ElimSome " <>) . showsPrec 10 x . (' ' :) . showsPrec 10 y
   showsPrec _ MkFix = ("MkFix" <>)
   showsPrec _ ElimFix = ("ElimFix" <>)
+  showsPrec _ FixSKI = ("FixSKI" <>)
   showsPrec _ (MkNewtype' _) = ("MkNewtype" <>)
   showsPrec _ (ElimNewtype' _) = ("ElimNewtype" <>)
+  showsPrec _ MkEq = ("MkEq" <>)
+  showsPrec _ ElimEq = ("ElimEq" <>)
 
 type family MkNewtype :: GetNewtypeInner b ~> b
 type instance MkNewtype = 'MkNewtype' 'Refl
@@ -331,10 +344,15 @@ type family Interp (f :: a ~> b) (x :: a) :: b where
     Interp (ElimSome x y) z = H4 (Interp x z) y
   Interp MkFix x = 'Fix x
   Interp ElimFix ('Fix x) = x
-  Interp (x :@@ y) z = Interp (Interp x y) z
-  Interp (x :@ y) z = Interp (Interp x y) z
+  Interp FixSKI f = FixSKI :@@ f
+  Interp (FixSKI :@@ f) x = Interp (Interp f (FixSKI :@@ f)) x
   Interp @a @b (MkNewtype' eq) x = GetNewtypeConstructor b (CoerceTo' eq x)
   Interp @a @b (ElimNewtype' eq) x = CoerceTo' eq (H3 (GetNewtypeConstructor a) x)
+  Interp MkEq _ = 'Refl
+  Interp ElimEq eq = ElimEq :@@ eq
+  Interp (ElimEq :@@ 'Refl) x = x
+  Interp (x :@@ y) z = Interp (Interp x y) z
+  Interp (x :@ y) z = Interp (Interp x y) z
 
 interp :: (a ~> b) -> a -> b
 interp I x = x
@@ -360,10 +378,15 @@ interp MkSome x = Some x
 interp (ElimSome x y) z = case interp x z of Some w -> interp y w
 interp MkFix x = Fix x
 interp ElimFix (Fix x) = x
-interp (x :@@ y) z = interp (interp x y) z
-interp (x :@ y) z = interp (interp x y) z
+interp FixSKI f = FixSKI :@@ f
+interp (FixSKI :@@ f) x = interp (interp f (FixSKI :@@ f)) x
 interp (MkNewtype' Refl) x = coerceNewtypeUp x
 interp (ElimNewtype' Refl) x = coerceNewtypeDown x
+interp MkEq _ = Refl
+interp ElimEq eq = ElimEq :@@ eq
+interp (ElimEq :@@ Refl) x = x
+interp (x :@@ y) z = interp (interp x y) z
+interp (x :@ y) z = interp (interp x y) z
 
 -- Implementing this directly is *possible*, but you need some `unsafeCoerce` internally
 -- on the `MkForall` and `ElimSome` cases, so it doesn't make much sense to do so.
@@ -429,41 +452,27 @@ type NatZ = MkFix . MkNewtype . MkLeft . MkUnit
 type NatS :: Nat ~> Nat
 type NatS = MkFix . MkNewtype . MkRight
 
-newtype SelfF a b = SelfF (b ~> a)
-type instance DefineNewtypeInner (SelfF a b) = b ~> a
-type instance DefineNewtypeConstructor (SelfF a b) = 'SelfF
-
-type Self a = Fix (SelfF a)
-
-type WrapSelf :: (Self a ~> a) ~> Self a
-type WrapSelf = MkFix . MkNewtype
-
-type UnwrapSelf :: Self a ~> Self a ~> a
-type UnwrapSelf = ElimNewtype . ElimFix
-
-type SelfApply :: Self a ~> a
-type SelfApply = FlipS :@ TwiceS :@ UnwrapSelf
-
-type Y :: (a ~> a) ~> a
-type Y = S :@ (S :@ (S :@ (K :@ S) :@ K) :@ (K :@ SelfApply)) :@ (S :@ (K :@ WrapSelf) :@ (S :@ (S :@ (K :@ S) :@ K) :@ (K :@ SelfApply)))
-
-type EtaExpand :: (a ~> b) -> (a ~> b)
-type EtaExpand f = S :@ (K :@ f) :@ I
-
--- FIXME: always causes term not to terminate
-type Z :: ((a ~> b) ~> (a ~> b)) ~> a ~> b
-type Z = S :@
-  (S :@ (S . K) :@ (K :@ (S :@ (EtaExpand (S . K . SelfApply)) :@ (K :@ I)))) :@ (S :@ (K :@ WrapSelf) :@
-  (S :@ (S . K) :@ (K :@ (S :@ (EtaExpand (S . K . SelfApply)) :@ (K :@ I)))))
-
 type NatAdd' :: (Nat ~> Nat ~> Nat) ~> Nat ~> Nat ~> Nat
 type NatAdd' =
   (K :@ ComposeS <*> (K :@ (ElimEither :@ (K :@ I)) <*> ComposeS :@ (FlipS :@ ComposeS :@ NatS)))
   <*>
   K :@ (ElimNewtype . ElimFix)
 
-type NatAdd'Wrong :: (Nat ~> Nat ~> Nat) ~> Nat ~> Nat ~> Nat
-type NatAdd'Wrong = K :@ (ElimEither :@ (K :@ I) :@ (K :@ I) . ElimNewtype . ElimFix)
-
 type NatAdd :: Nat ~> Nat ~> Nat
-type NatAdd = Z :@ NatAdd'Wrong
+type NatAdd = FixSKI :@ NatAdd'
+
+natAdd :: Nat ~> Nat ~> Nat
+natAdd = known' (Proxy @NatAdd)
+
+zero_plus_x_is_x :: Single (n :: Nat) -> Interp (K :@ NatAdd <*> NatZ <*> K :@@ n) '() :~: n
+zero_plus_x_is_x _ = Refl
+
+zero_plus_x_is_xS :: Single (n :: Nat) ~> Interp (K :@ NatAdd <*> NatZ <*> K :@@ n) '() :~: n
+zero_plus_x_is_xS = MkEq
+
+{-
+x_plus_zero_is_x :: Single (n :: Nat) -> Interp (K :@ (NatAdd :@@ n) <*> NatZ) '() :~: n
+x_plus_zero_is_x (SFix n) = sunwrap n \Refl n' -> case n' of
+  SLeft SUnit -> Refl
+  SRight n'' -> _ $ x_plus_zero_is_x n''
+_}
