@@ -138,10 +138,16 @@ instance
     known = SForallS (unsafeCoerce (known :: Single (y @Skolem))) known
 
 newtype Fix (f :: Type -> Type) = Fix (f (Fix f))
+deriving stock instance Show (f (Fix f)) => Show (Fix f)
 data instance Single @(Fix f) fx where
   SFix :: Single @(f (Fix f)) x -> Single ('Fix x)
 instance Known x => Known ('Fix x) where
   known = SFix known
+
+data instance Single @(a :~: b) eq where
+  SRefl :: Single @(a :~: a) 'Refl
+instance Known 'Refl where
+  known = SRefl
 
 -- Type-level Newtype-specialised generics
 
@@ -179,14 +185,16 @@ data (~>) (a :: Type) (b :: Type) where
   (:@@) :: (a ~> b ~> c) -> a -> b ~> c
   MkUnit :: a ~> ()
   MkPair :: a ~> b ~> (a, b)
-  ElimPair :: (a, b) ~> (a ~> b ~> c) ~> c
+  ElimPair :: (a ~> b ~> c) ~> (a, b) ~> c
   MkLeft :: a ~> Either a b
   MkRight :: b ~> Either a b
-  ElimEither :: Either a b ~> (a ~> c) ~> (b ~> c) ~> c
+  ElimEither :: (a ~> c) ~> (b ~> c) ~> Either a b ~> c
   MkForall :: forall a f. (forall x. a ~> f x) -> a ~> ForallS f
   ElimForall :: ForallS f ~> f x
   MkSome :: forall f x. f x ~> Some f
   ElimSome :: forall a b c (f :: c -> Type). (a ~> Some f) -> (forall x. f x ~> b) -> a ~> b
+  -- FIXME: Add inductive types rather than this, as fixpoint always cause non-termination
+  -- when interpreted with 'Interp'
   MkFix :: f (Fix f) ~> Fix f
   ElimFix :: Fix f ~> f (Fix f)
   MkNewtype' :: a :~: GetNewtypeInner b -> a ~> b
@@ -238,8 +246,8 @@ instance
   where known = SElimSome known (unsafeCoerce (known :: Single (y @Skolem)))
 instance Known MkFix where known = SMkFix
 instance Known ElimFix where known = SElimFix
-instance Known (MkNewtype' eq) where known = SMkNewtype' (error "FIXME")
-instance Known (ElimNewtype' eq) where known = SElimNewtype' (error "FIXME")
+instance Known eq => Known (MkNewtype' eq) where known = SMkNewtype' known
+instance Known eq => Known (ElimNewtype' eq) where known = SElimNewtype' known
 instance Show (a ~> b) where
   showsPrec _ K = ('K' :)
   showsPrec _ S = ('S' :)
@@ -306,14 +314,14 @@ type family Interp (f :: a ~> b) (x :: a) :: b where
   Interp MkUnit _ = '()
   Interp MkPair x = MkPair :@@ x
   Interp (MkPair :@@ x) y = '(x, y)
-  Interp ElimPair x = ElimPair :@@ x
-  Interp (ElimPair :@@ '(x, y)) f = f `Interp` x `Interp` y
+  Interp ElimPair f = ElimPair :@@ f
+  Interp (ElimPair :@@ f) '(x, y) = f `Interp` x `Interp` y
   Interp MkLeft x = Left x
   Interp MkRight x = Right x
-  Interp ElimEither x = ElimEither :@@ x
-  Interp (ElimEither :@@ x) f = ElimEither :@@ x :@@ f
-  Interp (ElimEither :@@ Left x :@@ f) _ = Interp f x
-  Interp (ElimEither :@@ Right x :@@ _) g = Interp g x
+  Interp ElimEither f = ElimEither :@@ f
+  Interp (ElimEither :@@ f) g = ElimEither :@@ f :@@ g
+  Interp (ElimEither :@@ f :@@ _) (Left x) = Interp f x
+  Interp (ElimEither :@@ _ :@@ g) (Right x) = Interp g x
   forall a b (f :: a -> Type) (t :: forall x. b ~> f x) (y :: b).
     Interp (MkForall t) y = 'ForallS t y
   forall a b (f :: a -> Type) (x :: forall z. b ~> f z) (y :: b).
@@ -338,14 +346,14 @@ interp (S :@@ x :@@ y) z = (interp x z) `interp` (interp y z)
 interp MkUnit _ = ()
 interp MkPair x = MkPair :@@ x
 interp (MkPair :@@ x) y = (x, y)
-interp ElimPair x = ElimPair :@@ x
-interp (ElimPair :@@ (x, y)) f = f `interp` x `interp` y
+interp ElimPair f = ElimPair :@@ f
+interp (ElimPair :@@ f) (x, y) = f `interp` x `interp` y
 interp MkLeft x = Left x
 interp MkRight x = Right x
-interp ElimEither x = ElimEither :@@ x
-interp (ElimEither :@@ x) f = ElimEither :@@ x :@@ f
-interp (ElimEither :@@ Left x :@@ f) _ = interp f x
-interp (ElimEither :@@ Right x :@@ _) g = interp g x
+interp ElimEither f = ElimEither :@@ f
+interp (ElimEither :@@ f) g = ElimEither :@@ f :@@ g
+interp (ElimEither :@@ f :@@ _) (Left x) = interp f x
+interp (ElimEither :@@ _ :@@ g) (Right x) = interp g x
 interp (MkForall x) y = ForallS x y
 interp ElimForall (ForallS x y) = interp x y
 interp MkSome x = Some x
@@ -370,6 +378,12 @@ type FlipS = S :@ (S :@ (K :@ S) :@ (S :@ (K :@ K) :@ S)) :@ (K :@ K)
 type ComposeS :: (b ~> c) ~> (a ~> b) ~> a ~> c
 type ComposeS = S :@ (K :@ S) :@ K
 
+type (.) a b = ComposeS :@ a :@ b
+infixr 8 .
+
+type (<*>) a b = S :@ a :@ b
+infixl 4 <*>
+
 type TwiceS :: a ~> (a ~> a ~> b) ~> b
 type TwiceS = S :@ (S :@ (K :@ S) :@ (S :@ (K :@ (S :@ I)) :@ K)) :@ K
 
@@ -377,7 +391,6 @@ type TopairS :: a ~> (a, a)
 type TopairS = FlipS :@ TwiceS :@ MkPair
 
 newtype Id' a = Id' (a ~> a)
-
 type instance DefineNewtypeInner (Id' a) = a ~> a
 type instance DefineNewtypeConstructor (Id' a) = 'Id'
 
@@ -402,3 +415,55 @@ type RemoveUnitS = FlipS :@ RemoveConstantS :@ MkUnit
 
 type IdS_recovered :: forall a. a ~> a
 type IdS_recovered = RemoveUnitS :@ (ComposeS :@ ElimNewtype :@ (S :@ (K :@ ElimForall) :@ IdS))
+
+newtype NatF a = NatF (Either () a)
+  deriving stock Show
+type instance DefineNewtypeInner (NatF a) = Either () a
+type instance DefineNewtypeConstructor (NatF a) = 'NatF
+
+type Nat = Fix NatF
+
+type NatZ :: a ~> Nat
+type NatZ = MkFix . MkNewtype . MkLeft . MkUnit
+
+type NatS :: Nat ~> Nat
+type NatS = MkFix . MkNewtype . MkRight
+
+newtype SelfF a b = SelfF (b ~> a)
+type instance DefineNewtypeInner (SelfF a b) = b ~> a
+type instance DefineNewtypeConstructor (SelfF a b) = 'SelfF
+
+type Self a = Fix (SelfF a)
+
+type WrapSelf :: (Self a ~> a) ~> Self a
+type WrapSelf = MkFix . MkNewtype
+
+type UnwrapSelf :: Self a ~> Self a ~> a
+type UnwrapSelf = ElimNewtype . ElimFix
+
+type SelfApply :: Self a ~> a
+type SelfApply = FlipS :@ TwiceS :@ UnwrapSelf
+
+type Y :: (a ~> a) ~> a
+type Y = S :@ (S :@ (S :@ (K :@ S) :@ K) :@ (K :@ SelfApply)) :@ (S :@ (K :@ WrapSelf) :@ (S :@ (S :@ (K :@ S) :@ K) :@ (K :@ SelfApply)))
+
+type EtaExpand :: (a ~> b) -> (a ~> b)
+type EtaExpand f = S :@ (K :@ f) :@ I
+
+-- FIXME: always causes term not to terminate
+type Z :: ((a ~> b) ~> (a ~> b)) ~> a ~> b
+type Z = S :@
+  (S :@ (S . K) :@ (K :@ (S :@ (EtaExpand (S . K . SelfApply)) :@ (K :@ I)))) :@ (S :@ (K :@ WrapSelf) :@
+  (S :@ (S . K) :@ (K :@ (S :@ (EtaExpand (S . K . SelfApply)) :@ (K :@ I)))))
+
+type NatAdd' :: (Nat ~> Nat ~> Nat) ~> Nat ~> Nat ~> Nat
+type NatAdd' =
+  (K :@ ComposeS <*> (K :@ (ElimEither :@ (K :@ I)) <*> ComposeS :@ (FlipS :@ ComposeS :@ NatS)))
+  <*>
+  K :@ (ElimNewtype . ElimFix)
+
+type NatAdd'Wrong :: (Nat ~> Nat ~> Nat) ~> Nat ~> Nat ~> Nat
+type NatAdd'Wrong = K :@ (ElimEither :@ (K :@ I) :@ (K :@ I) . ElimNewtype . ElimFix)
+
+type NatAdd :: Nat ~> Nat ~> Nat
+type NatAdd = Z :@ NatAdd'Wrong
