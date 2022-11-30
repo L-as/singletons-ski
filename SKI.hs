@@ -461,8 +461,8 @@ type NatAdd' =
 type NatAdd :: Nat ~> Nat ~> Nat
 type NatAdd = FixSKI :@ NatAdd'
 
-natAdd :: Nat ~> Nat ~> Nat
-natAdd = known' (Proxy @NatAdd)
+natAdd :: Nat -> Nat -> Nat
+natAdd = interp . interp (known' (Proxy @NatAdd))
 
 zero_plus_x_is_x :: Single (n :: Nat) -> Interp (K :@ NatAdd <*> NatZ <*> K :@@ n) '() :~: n
 zero_plus_x_is_x _ = Refl
@@ -475,4 +475,4 @@ x_plus_zero_is_x :: Single (n :: Nat) -> Interp (K :@ (NatAdd :@@ n) <*> NatZ) '
 x_plus_zero_is_x (SFix n) = sunwrap n \Refl n' -> case n' of
   SLeft SUnit -> Refl
   SRight n'' -> _ $ x_plus_zero_is_x n''
-_}
+-}
